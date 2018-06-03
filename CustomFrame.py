@@ -1,17 +1,24 @@
 import wx
 import wx.adv
+import fusee_launcher as Fusee
+import MockArguments
 
 
 
 class CustomFrame(wx.Frame):
-
+    
     def __init__(self, *arg, **kw):
         super(CustomFrame, self).__init__(*arg, **kw)
 
+        self.devVid       = 0x0955
+        self.devPid       = 0x7321
+
         self.devConnected = False
-        self.fileSelected = "" 
+        self.payloadPath  = "" 
         self.myTimer      = wx.Timer(self)
         self.noTicks      = 0
+        self.labelSize    = 18
+        self.haxBackend   = Fusee.HaxBackend.create_appropriate_backend()
 
         self.mainSizer = wx.BoxSizer(wx.VERTICAL)
         self.fileSizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -24,7 +31,7 @@ class CustomFrame(wx.Frame):
         self.spaceAnim.LoadFile("space_anim.gif")
 
         self.fileSizer.Add(self.btnOpen, 0, wx.ALL|wx.ALIGN_LEFT, 8)
-        self.fileSizer.Add(self.fileLabel, 0, wx.ALL|wx.ALIGN_LEFT|wx.ALIGN_CENTER_VERTICAL, 8)
+        self.fileSizer.Add(self.fileLabel, 0, wx.RIGHT|wx.ALIGN_LEFT|wx.ALIGN_CENTER_VERTICAL, 8)
 
         self.mainSizer.Add(self.spaceAnim, 0, wx.ALL|wx.ALIGN_CENTER, 8)
         self.mainSizer.Add(self.devLabel, 0, wx.ALL|wx.ALIGN_CENTER, 8)
@@ -39,13 +46,16 @@ class CustomFrame(wx.Frame):
 
         self.spaceAnim.Play()
 
+        self.Bind(wx.EVT_BUTTON, self.onBtnOpenPressed, self.btnOpen)
+        self.Bind(wx.EVT_BUTTON, self.onBtnLaunchPressed, self.btnLaunch)
+
         self.Bind(wx.EVT_TIMER, self.onTimerUpdate)
         self.myTimer.Start(300)
     
 
 
     def validateLaunch(self):
-        if self.fileSelected != "" and self.devConnected:
+        if self.payloadPath != "" and self.devConnected:
             self.btnLaunch.Enable()
         else:
             self.btnLaunch.Disable()
@@ -53,7 +63,37 @@ class CustomFrame(wx.Frame):
     
 
     def onTimerUpdate(self, evt):
-        self.devLabel.SetLabel("Looking for device"+("." * self.noTicks))
+        dev = self.haxBackend.find_device(self.devVid, self.devPid)
+        if dev != None:
+            self.devConnected = True
+            self.devLabel.SetLabel("Device found!")
+        else:
+            self.devConnected = False
+            self.devLabel.SetLabel("Looking for device"+("."*self.noTicks))
+            self.noTicks = (self.noTicks+1)%4
+        self.validateLaunch()
 
-        self.noTicks += 1
-        if self.noTicks > 3: self.noTicks = 0
+
+
+    def onBtnOpenPressed(self, evt):
+        with wx.FileDialog(
+            self, "Select payload.", wildcard="Binary (*.bin)|*.bin", style=wx.FD_OPEN|wx.FD_FILE_MUST_EXIST
+        ) as fDialog:
+            if fDialog.ShowModal() == wx.ID_CANCEL:
+                return
+            
+            self.payloadPath = fDialog.GetPath()
+
+            slicePos = len(self.payloadPath)-self.labelSize
+            self.fileLabel.SetLabel(".."+self.payloadPath[max(0, slicePos):])
+
+            self.validateLaunch()
+    
+
+
+    def onBtnLaunchPressed():
+        args = MockArguments.MockArguments()
+        args.payload = self.payloadPath
+        Fusee.do_hax(args)
+        pass
+        
